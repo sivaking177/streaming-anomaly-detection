@@ -1,0 +1,7 @@
+requests>=2.32
+kafka-python>=2.0
+duckdb>=1.0  # writes the sink's Parquet copy of the window stats
+pydantic>=2  # StreamEvent schema (ingest/events.py)
+pytest>=8
+# Spark job only (needs a JVM and a Kafka broker at runtime):
+# pyspark>=3.5

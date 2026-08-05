@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streaming-anomaly-detection"
+version = "0.1.0"
+description = "Streaming anomaly detection over the Wikimedia recentchange stream: Kafka producer, Spark Structured Streaming window aggregation, rolling z-score/EWMA detection, live dashboard"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32",
+    "kafka-python>=2.0",
+    "duckdb>=1.0",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+spark = ["pyspark>=3.5"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["streamdetect*"]
+
+[tool.setuptools.package-data]
+"streamdetect.output" = ["dashboard.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+
+[tool.mypy]
+ignore_missing_imports = true
