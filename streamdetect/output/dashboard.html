@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wikimedia Stream — Anomaly Monitor</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: #0d1117; color: #e6edf3; margin: 0; padding: 20px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+          padding: 12px 16px; min-width: 150px; }
+  .card .label { color: #8b949e; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .05em; }
+  .card .value { font-size: 26px; margin-top: 4px; }
+  .card .value.alert { color: #f85149; }
+  canvas { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+           width: 100%; height: 220px; }
+  h2 { font-size: 14px; margin: 20px 0 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border-bottom: 1px solid #21262d; padding: 6px 8px; text-align: left; }
+  th { color: #8b949e; font-weight: normal; text-transform: uppercase;
+       font-size: 11px; }
+  .spike { color: #f85149; } .drop { color: #d29922; }
+  .empty { color: #8b949e; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Wikimedia recentchange — anomaly monitor</h1>
+<div class="sub">1-minute windows · detector mode: <span id="mode">–</span> · refreshes every 2s · <span id="updated">waiting for data…</span></div>
+
+<div class="cards">
+  <div class="card"><div class="label">Events / min (last window)</div><div class="value" id="rate">–</div></div>
+  <div class="card"><div class="label">Mean latency (ms)</div><div class="value" id="latency">–</div></div>
+  <div class="card"><div class="label">p95 latency (ms)</div><div class="value" id="p95">–</div></div>
+  <div class="card"><div class="label">Total events</div><div class="value" id="total">–</div></div>
+  <div class="card"><div class="label">Anomalies flagged</div><div class="value" id="flags">–</div></div>
+</div>
+
+<canvas id="chart" width="1100" height="220"></canvas>
+
+<h2>Events by wiki (last window)</h2>
+<div id="wikis"><span class="empty">no data yet</span></div>
+
+<h2>Flagged-window history</h2>
+<div id="anomalies"><span class="empty">none yet</span></div>
+
+<h2>Recent windows</h2>
+<div id="windows"></div>
+
+<script>
+function fmtTime(epoch) {
+  return new Date(epoch * 1000).toISOString().slice(11, 19) + "Z";
+}
+function drawChart(series, anomalies) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height, pad = 30;
+  ctx.clearRect(0, 0, W, H);
+  if (!series.length) return;
+  const maxY = Math.max(...series.map(s => s.count)) * 1.15 || 1;
+  const x = i => pad + (W - pad - 8) * (series.length === 1 ? 0 : i / (series.length - 1));
+  const y = v => H - pad - (H - pad - 10) * (v / maxY);
+  ctx.strokeStyle = "#30363d"; ctx.fillStyle = "#8b949e"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, 6); ctx.lineTo(pad, H - pad); ctx.lineTo(W - 8, H - pad); ctx.stroke();
+  ctx.fillText(maxY.toFixed(0), 2, y(maxY) + 4);
+  ctx.fillText("0", 2, H - pad + 4);
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.6; ctx.beginPath();
+  series.forEach((s, i) => { const px = x(i), py = y(s.count); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.stroke();
+  const flagged = new Set(anomalies.map(a => a.window_start));
+  ctx.fillStyle = "#f85149";
+  series.forEach((s, i) => {
+    if (flagged.has(s.window_start)) { ctx.beginPath(); ctx.arc(x(i), y(s.count), 4, 0, 7); ctx.fill(); }
+  });
+}
+async function refresh() {
+  try {
+    const res = await fetch("/api/stats");
+    const data = await res.json();
+    const latest = data.latest && data.latest.last_window;
+    if (latest) {
+      document.getElementById("rate").textContent = latest.count;
+      document.getElementById("latency").textContent = latest.mean_latency_ms.toFixed(1);
+      document.getElementById("p95").textContent = latest.p95_latency_ms.toFixed(1);
+      document.getElementById("rate").className =
+        "value" + (data.latest.last_flag && data.latest.last_flag.window_start === latest.window_start ? " alert" : "");
+    }
+    document.getElementById("total").textContent = data.latest.events_total ?? "–";
+    document.getElementById("flags").textContent = data.latest.anomalies_written ?? data.anomalies.length;
+    document.getElementById("mode").textContent = data.latest.detector_mode ?? "zscore";
+    document.getElementById("updated").textContent =
+      "updated " + new Date().toLocaleTimeString();
+    drawChart(data.series, data.anomalies);
+    const byWiki = (latest && latest.counts_by_wiki) || data.latest.counts_by_wiki || {};
+    const wikiRows = Object.entries(byWiki).sort((a, b) => b[1] - a[1]);
+    document.getElementById("wikis").innerHTML = wikiRows.length ?
+      "<table><tr><th>wiki</th><th>events</th><th>share</th></tr>" +
+      wikiRows.map(([wiki, n]) => `<tr><td>${wiki}</td><td>${n}</td>` +
+        `<td>${latest ? (100 * n / latest.count).toFixed(1) : "–"}%</td></tr>`).join("") +
+      "</table>" : '<span class="empty">no data yet</span>';
+    const anoms = [...data.anomalies].reverse();
+    document.getElementById("anomalies").innerHTML = anoms.length ?
+      "<table><tr><th>window</th><th>direction</th><th>observed</th><th>expected</th><th>z</th><th>method</th></tr>" +
+      anoms.map(a => `<tr><td>${fmtTime(a.window_start)}</td><td class="${a.direction}">${a.direction}</td>` +
+        `<td>${a.observed}</td><td>${a.expected.toFixed(1)}</td><td>${a.z_score.toFixed(2)}</td><td>${a.method}</td></tr>`).join("") +
+      "</table>" : '<span class="empty">none yet</span>';
+    const wins = [...data.series].reverse().slice(0, 12);
+    document.getElementById("windows").innerHTML =
+      "<table><tr><th>window start</th><th>events</th><th>mean latency (ms)</th><th>p95 (ms)</th><th>max (ms)</th></tr>" +
+      wins.map(w => `<tr><td>${fmtTime(w.window_start)}</td><td>${w.count}</td>` +
+        `<td>${w.mean_latency_ms.toFixed(1)}</td><td>${w.p95_latency_ms.toFixed(1)}</td><td>${w.max_latency_ms.toFixed(1)}</td></tr>`).join("") +
+      "</table>";
+  } catch (e) { /* server not up yet; next tick retries */ }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
