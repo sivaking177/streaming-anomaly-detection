@@ -1,0 +1,56 @@
+# Local end-to-end stack: a Kafka broker, plus the producer in simulate
+# mode feeding it, plus the dashboard.
+#
+#   docker compose up -d kafka dashboard        # broker + dashboard
+#   docker compose --profile simulate up producer
+#
+# The Spark job itself runs on the host (it needs a JVM), reading the
+# broker at localhost:29092:
+#   spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.3.0 \
+#       -m streamdetect.jobs.spark_job --bootstrap-servers localhost:29092 \
+#       --topic wikimedia.recentchange \
+#       --output-dir ./out --checkpoint-dir ./checkpoint
+# …and the dashboard service below reads ./out, where the job writes.
+#
+# Note: this file is configuration. It was checked by parsing it, not by
+# running it -- the machine this repo was built on has no Docker daemon.
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    ports:
+      - "29092:29092"   # host clients (spark-submit) reach the broker here
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # Single-node throwaway broker: replication factor 1 everywhere.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+  producer:
+    build: .
+    profiles: ["simulate"]
+    depends_on:
+      - kafka
+    command: >
+      python -m streamdetect.ingest.producer --mode simulate
+      --bootstrap-servers kafka:9092 --topic wikimedia.recentchange
+      --rate 25 --burst-after 600 --burst-multiplier 3
+      --duration-seconds 3600
+
+  dashboard:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./out:/app/out
+    command: >
+      python -m streamdetect.output.dashboard --sink-dir /app/out
+      --host 0.0.0.0 --port 8765

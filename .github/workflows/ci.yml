@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Simulation smoke check (burst must be flagged)
+        run: |
+          python -m streamdetect.jobs.simulation --out /tmp/sim-out \
+            --windows 40 --burst-start 25 --burst-multiplier 3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("/tmp/sim-out/anomalies.jsonl")
+          flags = (
+              [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+              if path.exists()
+              else []
+          )
+          assert len(flags) == 2, (
+              f"expected the 2 burst windows to be flagged, got {len(flags)}"
+          )
+          print(f"smoke check passed: {len(flags)} burst windows flagged")
+          PY
